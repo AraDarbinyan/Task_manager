@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+pydantic
+alembic
+sqlalchemy
+python-jose[cryptography]
