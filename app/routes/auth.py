@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from fastapi.security import OAuth2PasswordRequestForm
 
 from app.db import models
@@ -7,6 +8,7 @@ from app.db.session import get_db
 from app.utils.hashing import verify_password, hash_password
 from app.core.security import create_access_token
 from app.core.deps import get_current_user
+from app.shemas.user import UserCreate, UserOut
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
@@ -15,39 +17,35 @@ def login(
     db: Session = Depends(get_db),
     form_data: OAuth2PasswordRequestForm = Depends(),
 ):
-    user = db.query(models.User).filter(models.User.email == form_data.username).first()
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User with this email does not exist",
-        )
-    if not verify_password(form_data.password, user.hashed_password):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Incorrect password",
-        )
-    access_token = create_access_token(subject=user.id)
+    email_norm = form_data.username.strip().lower()
+    user = (
+        db.query(models.User)
+        .filter(func.lower(models.User.email) == email_norm)
+        .first()
+    )
+    if not user or not verify_password(form_data.password, user.hashed_password):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+
+    access_token = create_access_token(subject=user.email)
     return {"access_token": access_token, "token_type": "bearer"}
 
-@router.post("/register", status_code=status.HTTP_201_CREATED)
-def register(
-    db: Session = Depends(get_db),
-    form_data: OAuth2PasswordRequestForm = Depends(),
-):
-    user = db.query(models.User).filter(models.User.email == form_data.username).first()
-    if user:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="User with this email already exists",
-        )
-    new_user = models.User(
-        email=form_data.username,
-        hashed_password=hash_password(form_data.password),
+@router.post("/register", response_model=UserOut, status_code=status.HTTP_201_CREATED)
+def register(payload: UserCreate, db: Session = Depends(get_db)):
+    if len(payload.password.encode("utf-8")) > 72:
+        raise HTTPException(status_code=400, detail="Password too long (max 72 bytes)")
+
+    existing = db.query(models.User).filter(models.User.email == payload.email).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="User with this email already exists")
+
+    user = models.User(
+        email=payload.email,
+        hashed_password=hash_password(payload.password),
     )
-    db.add(new_user)
+    db.add(user)
     db.commit()
-    db.refresh(new_user)
-    return {"msg": "User created successfully"}
+    db.refresh(user)
+    return user
 
 
 @router.get("/me")
